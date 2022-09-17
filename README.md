@@ -3,6 +3,8 @@
 
 
 ## Caveat
-1. Examples 101 to 103 are VRPs without budget constraints
-2. Examples 100 to 104 contains only visualization (no file recording optimization information).
-3. Examples 2 and 3 show the difference between a dense representation and a sparse representation.
+1. Examples 2 and 3 show the difference between a dense representation and a sparse representation.
+2. Examples 4 and 5 varify the effect of the budget constraints.
+3. Example 6 reaches the size of 100 nodes and 10 customers. 
+4. Example 7 contains a solution for the generic VRP.
+5. Example 8 is for the generic VRP.
