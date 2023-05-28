@@ -15,6 +15,7 @@ from copy import deepcopy
 from ortools.constraint_solver import pywrapcp
 from ortools.constraint_solver import routing_enums_pb2
 import sys
+from termcolor import colored
 
 
 
@@ -461,12 +462,21 @@ def frp_reschedule(G, routes, all_time_stamps, t_max, budget, dir, gamma, obj="m
     model.optimize()    
     
     # Return 0 if the re-scheduling FRP is not feasible
+    
+    
     if model.Status == 3:
+        print(colored("The re-scheduling MILP is infeasible.", 'yellow'))
         return 0
+    
+    if model.Status == 9:
+        print(colored("No feasible solution found within the time limit.", 'yellow'))
+        return -1
+    
+    
+    print(colored("Optimal solution found for the re-scheduling MILP!", 'green'))
     
     
     #* [Comment out this block if output is not needed]
-    
     # Write down the new schedule
     new_start = c.X - duration
     
@@ -610,38 +620,54 @@ def graph_pre_pruning(G, depot, customer):
 Re-routing FRP
 """
 
-def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity, budget, gamma, num_layer, dir):
+class ReRoutingFRPSolver():
     
     
+    def __init__(self, G, I, routes, all_time_stamps, clusters, t_max, budget, gamma, num_layer, dir) -> None:
+        
+        # Members from input
+        self.G = G
+        for e in self.G.edges:
+            self.G[e[0]][e[1]]['is_artificial'] = 0
+        self.I = I
+        
+        self.routes = routes
+        self.all_time_stamps = all_time_stamps
+        self.clusters = clusters
+        self.demand = I.demands
+        self.capacity = I.capacity
+        self.budget = budget
+        self.t_max = t_max
+        self.gamma = gamma
+        self.num_layer = num_layer
+        self.dir = dir
+        
+        
+        # Members for output (dynamically updated)
+        self.new_routes = {}
+        self.new_all_time_stamps = {}
+        self.G_adjusted = G # Need to be output as well
 
-    def budget_violation_check(v_2_re_route, discarded_routes, G_adjusted):
         
-        # Compute the budget indicator for the subsequent re-routing
-        
-        all_job_start, all_job_end = utils.extract_start_n_end_time(G_adjusted, all_time_stamps)
-        # all_job_start_dict = dict(zip(range(len(clusters)), all_job_start))
-        # all_job_end_dict = dict(zip(range(len(clusters)), all_job_end)) 
-        dispatched_vehicles = [key for key in clusters if clusters[key] != [] and key not in discarded_routes]
-                
-        other_job_start = [r for i, r in enumerate(all_job_start) if i != v_2_re_route and i not in discarded_routes]
-        other_job_end = [r for i, r in enumerate(all_job_end) if i != v_2_re_route and i not in discarded_routes]
-        
-        other_time_stamps = list(set([element for innerList in other_job_start + other_job_end for element in innerList]))
-        other_time_stamps.sort()
-        Q = np.arange(len(other_time_stamps))
-        other_time_stamps.append(t_max)
-        
-        remaining_v = deepcopy(dispatched_vehicles)
-        remaining_v.remove(v_2_re_route)
 
-        budget_indicator = []
         
+        
+    def budget_violation_check(self):
+        
+        all_job_start, all_job_end = utils.extract_start_n_end_time(self.G_adjusted, self.new_all_time_stamps)
+        new_all_time_stamps_list = list(set([element for innerList in all_job_start + all_job_end for element in innerList]))
+        new_all_time_stamps_list.sort()
+        new_all_time_stamps_list.append(self.t_max)
+        
+        Q = np.arange(len(new_all_time_stamps_list)-1)
+        
+
         for i in range(len(Q)):
-            ss = other_time_stamps[i]
-            tt = other_time_stamps[i+1]
+            ss = new_all_time_stamps_list[i]
+            tt = new_all_time_stamps_list[i+1]
             
             control_q = 0
-            for v in remaining_v:
+            for v in range(len(self.new_all_time_stamps)):
                 bb = False
                 sss = all_job_start[v]
                 ttt = all_job_end[v]
@@ -651,73 +677,35 @@ def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity,
                 if bb == True:
                     control_q += 1
             
-            if control_q >= budget:
-                budget_indicator.append(0)
-            else:
-                budget_indicator.append(1)
+            if control_q > self.budget:
+                return True
+
+        return False
                 
-        # Check whether the current route violates the budget
-        violated = False
-        for i in range(len(Q)):
-            
-            if budget_indicator[i] == 1:
-                continue
-            
-            ss = other_time_stamps[i]
-            tt = other_time_stamps[i+1]
-            sss = all_job_start[v_2_re_route]
-            ttt = all_job_end[v_2_re_route]
-            for j in range(len(sss)):
-                if ss >= sss[j] and tt <= ttt[j]:
-                    violated = True
-                    
-        return violated, budget_indicator, other_time_stamps
-            
     
     
-    def re_route_one_vehicle(v_2_re_route, budget_indicator, other_time_stamps, G_adjusted):
-        
-        # if v_2_re_route != 0:
-        #     return 0, 0,0 ,0
-        
-        # print("===========")
-        # print(len(other_time_stamps))
-        # print(len(budget_indicator))
-        
-        Q = np.arange(len(other_time_stamps)-1)
+    def constrained_tsp_solver(self, v_2_re_route, budget_indicator, new_all_time_stamps_list):
         
         
-        K = clusters[v_2_re_route][:1]
-        D = clusters[v_2_re_route][1:]
+        Q = np.arange(len(budget_indicator))
+        K = self.clusters[v_2_re_route][:1]
+        D = self.clusters[v_2_re_route][1:]
         
         demand_subset = []
         for cus in D:
             cus_index = int(cus[-1][1:])
-            demand_subset.append(demand[cus_index])
-
-
-        for e in G.edges:
-            G[e[0]][e[1]]['is_artificial'] = 0
-  
-    
+            demand_subset.append(self.demand[cus_index])
+          
+        G_s = graph_pre_pruning(self.G, K, D)
         
-        G_s = graph_pre_pruning(G, K, D)
-        
-    
         # Add merged edges in the pruned graph to the original graph for time stamps extraction in next iteration
-        G_adjusted = utils.graph_edge_adjustment(G_s, G_adjusted)
+        self.G_adjusted = utils.graph_edge_adjustment(G_s, self.G_adjusted)
     
         V = list(G_s.nodes)
         _, new_to_old = utils.re_index_nodes(V)
         
-        G_e, departure, arrival, D_e, D_e_2d, demand_dict = utils.contruct_time_expanded_graph(G_s, num_layer, K, D, demand_subset)
+        G_e, departure, arrival, D_e, D_e_2d, demand_dict = utils.contruct_time_expanded_graph(G_s, self.num_layer, K, D, demand_subset)
     
-        
-        # if v_2_re_route == 0:
-        #     print("G_e information ================ ")
-        #     print(len(G_e.edges))
-        #     for e in G_e.edges:
-        #         print(G_e[e[0]][e[1]])
             
         #TODO: The discount_factor and inflated_factor for AV_enabled roads are needed here to conduct sensitivity analysis
         utils.assign_cost_n_travel_time(G_e)
@@ -733,7 +721,7 @@ def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity,
         # Model params
         
         # logging
-        path = dir + '/re_routing_log_vehicle_'+str(v_2_re_route)+'.txt'
+        path = self.dir + '/re_routing_log_vehicle_'+str(v_2_re_route)+'.txt'
         if os.path.exists(path):
             os.remove(path)
         model.Params.LogFile = path
@@ -742,21 +730,23 @@ def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity,
         # strategies
         # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
         model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
-        model.Params.ImproveStartTime = 120 # Give up proving optimality after 2 min
+        model.Params.ImproveStartTime = 30 # Give up proving optimality after 2 min
         
         # Termination
-        model.Params.BestObjStop = 1.05 * original_route_cost(v_2_re_route)  # The original route cost is a natural lower bound. 
+        model.Params.BestObjStop = 1.05 * self.original_route_cost(v_2_re_route)  # The original route cost is a natural lower bound. 
                                                                              # A re-route is good if the cost is < 1.05 original route cost
         
-        model.Params.TimeLimit = 240 # Terminate the MILP solver after 5 min
-        model.Params.Cutoff = HDV_route_cost(v_2_re_route) # cutoff the solution with even worse cost than dispatching an HDV
+        model.Params.TimeLimit = 60 # Terminate the MILP solver after 5 min
+        
+        #TODO: Replacing AV cost with HDV cost naively is incorrect. We need to re-solve the TSP
+        model.Params.Cutoff = self.HDV_route_cost(v_2_re_route) # cutoff the solution with even worse cost than dispatching an HDV
         
 
         # Create variables
         #* The lower bounds for all variables are zero by default
         x = model.addMVar(len(E_e), vtype=GRB.BINARY)
         y = model.addMVar(len(V_e), vtype=GRB.BINARY)
-        t = model.addMVar(len(V_e), ub = np.repeat(t_max, len(V_e)), vtype=GRB.CONTINUOUS)
+        t = model.addMVar(len(V_e), ub = np.repeat(self.t_max, len(V_e)), vtype=GRB.CONTINUOUS)
 
         alpha = model.addMVar((len(E_e), len(Q)), vtype=GRB.BINARY)
         beta = model.addMVar((len(E_e), len(Q)), vtype=GRB.BINARY)
@@ -797,15 +787,15 @@ def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity,
             model.addConstr(sum(x[edge_to_no[(i, j)]] for j in D_e if G_e.has_edge(i, j) and G_e[i][j]['is_artificial'] == 1) <= y[i])
 
         ## Capacity limit
-        model.addConstr(sum(demand_dict[i] * y[i] for i in D_e) <= capacity)
+        model.addConstr(sum(demand_dict[i] * y[i] for i in D_e) <= self.capacity)
 
 
         ## Subtour elimination + time tracking
         for i in V_e:
             for j in V_e:
                 if G_e.has_edge(i, j):
-                    model.addConstr(t[j] >= t[i] + gamma[0] * G_e[i][j]['travel_time'] + t_max * (x[edge_to_no[(i, j)]] - 1))
-                    model.addConstr(t[j] <= t[i] + gamma[1] * G_e[i][j]['travel_time'] + t_max * (1 - x[edge_to_no[(i, j)]]))
+                    model.addConstr(t[j] >= t[i] + self.gamma[0] * G_e[i][j]['travel_time'] + self.t_max * (x[edge_to_no[(i, j)]] - 1))
+                    model.addConstr(t[j] <= t[i] + self.gamma[1] * G_e[i][j]['travel_time'] + self.t_max * (1 - x[edge_to_no[(i, j)]]))
                     
         # The following constraints can be captured by the previous constraint
         #// for e in E_e:
@@ -825,9 +815,9 @@ def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity,
             if G_e[i][j]['is_av'] == 0:
                 model.addConstrs(x[edge_to_no[(i, j)]] == alpha[edge_to_no[(i, j)], q] + beta[edge_to_no[(i, j)], q]
                                 for q in Q if budget_indicator[q] == 0)
-                model.addConstrs(t[j] <= other_time_stamps[q] + t_max * (1 - alpha[edge_to_no[(i, j)], q])
+                model.addConstrs(t[j] <= new_all_time_stamps_list[q] + self.t_max * (1 - alpha[edge_to_no[(i, j)], q])
                                 for q in Q if budget_indicator[q] == 0)
-                model.addConstrs(t[i] >= other_time_stamps[q+1] + t_max * (beta[edge_to_no[(i, j)], q] - 1)
+                model.addConstrs(t[i] >= new_all_time_stamps_list[q+1] + self.t_max * (beta[edge_to_no[(i, j)], q] - 1)
                             for q in Q if budget_indicator[q] == 0)
 
         # Set the makespan
@@ -843,92 +833,812 @@ def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity,
         
         
         # Infeasible (status code = 3), or objective is worse than the cutoff value (status code = 6), or no feasible solution found within the time limit (status code = 9)
-        if model.Status == 3 or model.Status == 6 or (model.Status == 9 and model.SolCount == 0):
-            return False, D, 0, G_adjusted
+        if model.Status == 3:
+            print(colored("Re-routing is infeasible. Unserved customers will be served by HDVs.", 'yellow'))
+            return False, 0, _, _
+        
+        if model.Status == 6:
+            print(colored("Re-routing is more expensive than disptaching HDVs. Unserved customers will be served by HDVs.", 'yellow'))
+            return False, 0, _, _
+        
+        if model.Status == 9 and model.SolCount == 0:
+            print(colored("Re-routing fails within the computational time limit. Unserved customers will be served by HDVs.", 'yellow'))
+            return False, 0, _, _
+        
+        
+        
         
 
         # Extract the routes and time stamps
         new_route, new_time_stamps = utils.extract_single_route_n_times(G_e, len(V), x, t, new_to_old, edge_to_no, departure, arrival)
         
-        routes[v_2_re_route] = new_route
-        all_time_stamps[v_2_re_route] = new_time_stamps 
+    
+        #* Returned values are: re_routing success, new routing cost, new route, new timestamps 
+        return True, model.ObjVal, new_route, new_time_stamps
+    
+    
+    def original_route_cost(self, vehicle):
+        cost = 0
+        route = self.routes[vehicle]
+        for i, j in zip(route[:-1], route[1:]):
+                cost += self.G[i][j]['av_cost']
+        
+        return cost
+    
+    
+    #TODO: This is not the correct cutoff value. We should re-solve the TSP given the customers originally served by the vehicle
+    def HDV_route_cost(self, vehicle):
+        cost = 0
+        route = self.routes[vehicle]
+        for i, j in zip(route[:-1], route[1:]):
+                cost += self.G[i][j]['non_av_cost']
+        
+        return cost
+
+            
+    def sort_routes(self):
+        
+        discounted_factor = 0.5
+        inflated_factor = 1.2
+        
+        all_job_start, all_job_end = utils.extract_start_n_end_time(self.G, self.all_time_stamps)
+        
+        # The amount of time spent on ordinary roads
+        control_time_list = []
+        for i, j in zip(all_job_start, all_job_end):
+            control_time = sum(np.array(j) - np.array(i))
+            control_time_list.append(control_time)
+            
+        # The amount of increased cost if replaced by an HDV
+        increased_cost_list = []
+        t_max_original_list = [sequence[-1][-1] for sequence in self.all_time_stamps.values()]
+        for control_time, total_time in zip(control_time_list, t_max_original_list):
+            AV_time = total_time - control_time
+            increased_cost_list.append( (1 - discounted_factor) * AV_time/ discounted_factor + (1 - inflated_factor) * control_time / inflated_factor)
+        
+        order = np.argsort(increased_cost_list)
+        
+        return order
+    
+    
+            
+    def compute_budget_indicator(self):
+        
+        all_job_start, all_job_end = utils.extract_start_n_end_time(self.G_adjusted, self.new_all_time_stamps)
+        new_all_time_stamps_list = list(set([element for innerList in all_job_start + all_job_end for element in innerList]))
+        new_all_time_stamps_list.sort()
+        
+        Q = np.arange(len(new_all_time_stamps_list))
+        new_all_time_stamps_list.append(self.t_max)
+
+        budget_indicator = []
+        
+        for i in range(len(Q)):
+            ss = new_all_time_stamps_list[i]
+            tt = new_all_time_stamps_list[i+1]
+            
+            control_q = 0
+            for v in range(len(self.new_all_time_stamps)):
+                bb = False
+                sss = all_job_start[v]
+                ttt = all_job_end[v]
+                for j in range(len(sss)):
+                    if ss >= sss[j] and tt <= ttt[j]:
+                        bb = True
+                if bb == True:
+                    control_q += 1 
+            
+            if control_q >= self.budget:
+                budget_indicator.append(0)
+            else:
+                budget_indicator.append(1)
+            
+        return budget_indicator, new_all_time_stamps_list
+            
+            
+            
+    def solve(self):
+        
+        cost = 0
+        D_bar = []
+        
+        # Determine the priority of re-routing
+        order = self.sort_routes()
+        print("The re-routing order is: " + str(order))
+        
+        
+        for v_2_re_route in order:
+            
+            
+            self.new_routes[v_2_re_route] = self.routes[v_2_re_route]
+            self.new_all_time_stamps[v_2_re_route] = self.all_time_stamps[v_2_re_route]
+            
+            violated = self.budget_violation_check()
+            
+            if not violated: 
+                cost +=  self.original_route_cost(v_2_re_route)
+                print("Route-"+str(v_2_re_route)+" does not violate the budget. Continue.")
+                continue
+            
+            # Temperarily delete it since it violates the budget
+            del self.new_routes[v_2_re_route]
+            del self.new_all_time_stamps[v_2_re_route]
+            print("Route-"+str(v_2_re_route)+" violates the budget. Try to re-route it.")
+            
+            
+            # Compute the the constraints for the tsp below
+            budget_indicator, new_all_time_stamps_list = self.compute_budget_indicator()
+            
+            # Call the constrained TSP solver
+            success, route_cost, new_route, new_time_stamps = self.constrained_tsp_solver(v_2_re_route, budget_indicator, new_all_time_stamps_list)
+            
+            if success:
+                cost += route_cost
+                self.new_routes[v_2_re_route] = new_route
+                self.new_all_time_stamps[v_2_re_route] = new_time_stamps
+                print(colored("Re-routing succeeds!", 'green'))
+            
+            else:
+                D_bar += [int(cus[-1][1:]) for cus in self.clusters[v_2_re_route][1:]]
+        
+        
+        return cost, self.new_routes, self.new_all_time_stamps, D_bar, self.G_adjusted
+    
+
+
+
+class ReRoutingFRPSolver_RandomOrder():
+    
+    def __init__(self, G, I, routes, all_time_stamps, clusters, t_max, budget, gamma, num_layer, dir) -> None:
+        
+        # Members from input
+        self.G = G
+        self.routes = routes
+        self.all_time_stamps = all_time_stamps
+        self.clusters = clusters
+        self.num_routes = len(clusters.keys())
+        self.demand = I.demands
+        self.capacity = I.capacity
+        self.budget = budget
+        self.t_max = t_max
+        self.gamma = gamma
+        self.num_layer = num_layer
+        self.dir = dir
+        
+        # private members for inner use (dynamically updated)
+        self.D_bar = []
+        self.discarded_routes = [] # Need to be output as well
+        self.G_adjusted = G # Need to be output as well
+        self.budget_indicator = None 
+        self.other_time_stamps = None
+
+        
+    def budget_violation_check(self, v_2_re_route):
+        
+        all_job_start, all_job_end = utils.extract_start_n_end_time(self.G_adjusted, self.all_time_stamps)
+        
+        # if v_2_re_route == 0:
+        #     print(np.array(all_job_start))
+        # all_job_start_dict = dict(zip(range(len(clusters)), all_job_start))
+        # all_job_end_dict = dict(zip(range(len(clusters)), all_job_end)) 
+        dispatched_vehicles = [key for key in self.clusters if self.clusters[key] != [] and key not in self.discarded_routes]
+                
+        other_job_start = [r for i, r in enumerate(all_job_start) if i != v_2_re_route and i not in self.discarded_routes]
+        other_job_end = [r for i, r in enumerate(all_job_end) if i != v_2_re_route and i not in self.discarded_routes]
+        
+        self.other_time_stamps = list(set([element for innerList in other_job_start + other_job_end for element in innerList]))
+        self.other_time_stamps.sort()
+        Q = np.arange(len(self.other_time_stamps))
+        self.other_time_stamps.append(self.t_max)
+        
+        remaining_v = deepcopy(dispatched_vehicles)
+        remaining_v.remove(v_2_re_route)
+
+        self.budget_indicator = []
+        
+        for i in range(len(Q)):
+            ss = self.other_time_stamps[i]
+            tt = self.other_time_stamps[i+1]
+            
+            control_q = 0
+            for v in remaining_v:
+                bb = False
+                sss = all_job_start[v]
+                ttt = all_job_end[v]
+                for j in range(len(sss)):
+                    if ss >= sss[j] and tt <= ttt[j]:
+                        bb = True
+                if bb == True:
+                    control_q += 1
+            
+            if control_q >= self.budget:
+                self.budget_indicator.append(0)
+            else:
+                self.budget_indicator.append(1)
+                
+        # Check whether the current route violates the budget
+        violated = False
+        for i in range(len(Q)):
+            
+            if self.budget_indicator[i] == 1:
+                continue
+            
+            ss = self.other_time_stamps[i]
+            tt = self.other_time_stamps[i+1]
+            sss = all_job_start[v_2_re_route]
+            ttt = all_job_end[v_2_re_route]
+            for j in range(len(sss)):
+                if ss >= sss[j] and tt <= ttt[j]:
+                    violated = True
+                    
+        return violated
+    
+    
+    def re_route_one_vehicle(self, v_2_re_route):
+        
+        # if v_2_re_route != 0:
+        #     return 0, 0,0 ,0
+        
+        # print("===========")
+        # print(len(other_time_stamps))
+        # print(len(budget_indicator))
+        
+        Q = np.arange(len(self.other_time_stamps)-1)
+        
+        
+        K = self.clusters[v_2_re_route][:1]
+        D = self.clusters[v_2_re_route][1:]
+        
+        demand_subset = []
+        for cus in D:
+            cus_index = int(cus[-1][1:])
+            demand_subset.append(self.demand[cus_index])
+
+
+        for e in self.G.edges:
+            self.G[e[0]][e[1]]['is_artificial'] = 0
+  
+    
+        
+        G_s = graph_pre_pruning(self.G, K, D)
+        
+    
+        # Add merged edges in the pruned graph to the original graph for time stamps extraction in next iteration
+        self.G_adjusted = utils.graph_edge_adjustment(G_s, self.G_adjusted)
+    
+        V = list(G_s.nodes)
+        _, new_to_old = utils.re_index_nodes(V)
+        
+        G_e, departure, arrival, D_e, D_e_2d, demand_dict = utils.contruct_time_expanded_graph(G_s, self.num_layer, K, D, demand_subset)
+    
+        
+        # if v_2_re_route == 0:
+        #     print("G_e information ================ ")
+        #     print(len(G_e.edges))
+        #     for e in G_e.edges:
+        #         print(G_e[e[0]][e[1]])
+            
+        #TODO: The discount_factor and inflated_factor for AV_enabled roads are needed here to conduct sensitivity analysis
+        utils.assign_cost_n_travel_time(G_e)
+        
+        E_e = list(G_e.edges)    
+        V_e = list(G_e.nodes)
+        edge_to_no, _ = utils.re_index_edges(E_e)
+        
+
+        # Create a new model
+        model = gp.Model('re-routing-vehicle-'+str(v_2_re_route))
+
+        # Model params
+        
+        # logging
+        path = self.dir + '/re_routing_log_vehicle_'+str(v_2_re_route)+'.txt'
+        if os.path.exists(path):
+            os.remove(path)
+        model.Params.LogFile = path
+        model.Params.LogToConsole = 0
+
+        # strategies
+        # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
+        model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
+        model.Params.ImproveStartTime = 120 # Give up proving optimality after 2 min
+        
+        # Termination
+        model.Params.BestObjStop = 1.05 * self.original_route_cost(v_2_re_route)  # The original route cost is a natural lower bound. 
+                                                                             # A re-route is good if the cost is < 1.05 original route cost
+        
+        model.Params.TimeLimit = 240 # Terminate the MILP solver after 5 min
+        model.Params.Cutoff = self.HDV_route_cost(v_2_re_route) # cutoff the solution with even worse cost than dispatching an HDV
+        
+
+        # Create variables
+        #* The lower bounds for all variables are zero by default
+        x = model.addMVar(len(E_e), vtype=GRB.BINARY)
+        y = model.addMVar(len(V_e), vtype=GRB.BINARY)
+        t = model.addMVar(len(V_e), ub = np.repeat(self.t_max, len(V_e)), vtype=GRB.CONTINUOUS)
+
+        alpha = model.addMVar((len(E_e), len(Q)), vtype=GRB.BINARY)
+        beta = model.addMVar((len(E_e), len(Q)), vtype=GRB.BINARY)
+
+        #// makespan = model.addVar(ub = t_max, vtype=GRB.CONTINUOUS)
+
+        # Add constraints
+
+        ## Flow conservation at all nodes (except the depot)
+        for i in list(set(V_e) - set([departure, arrival])):
+            out_no = [edge_to_no[e] for e in list(G_e.out_edges(i))]
+            in_no = [edge_to_no[e] for e in list(G_e.in_edges(i))]
+            model.addConstr(sum(x[out_no]) == sum(x[in_no]))
+            model.addConstr(sum(x[out_no]) <= 1)
+        
+        ## Flow conservation at the depot
+        departure_out = [edge_to_no[e] for e in list(G_e.out_edges(departure))]
+        arrival_in = [edge_to_no[e] for e in list(G_e.in_edges(arrival))]
+
+        model.addConstr(sum(x[departure_out]) == y[departure])
+        model.addConstr(sum(x[arrival_in]) == y[arrival])
+        model.addConstr(y[departure] == y[arrival])
+
+        ## Prohibit vehicles from passing through the depot
+        departure_in = [edge_to_no[e] for e in list(G_e.in_edges(departure))]
+        model.addConstr(x[departure_in] == 0)
+        
+        ## Allow a vehicle to pass thru a customer without serving it 
+        for i in D_e:
+            i_in = [edge_to_no[e] for e in list(G_e.in_edges(i))]
+            model.addConstr(sum(x[i_in]) >= y[i])
+
+        ## Each customer is only served by one vehicle
+        model.addConstrs(sum(y[i] for i in D_e_2d[:, h]) == 1 for h in range(len(D)))
+
+        ## Transition
+        for i in D_e:
+            model.addConstr(sum(x[edge_to_no[(i, j)]] for j in D_e if G_e.has_edge(i, j) and G_e[i][j]['is_artificial'] == 1) <= y[i])
+
+        ## Capacity limit
+        model.addConstr(sum(demand_dict[i] * y[i] for i in D_e) <= self.capacity)
+
+
+        ## Subtour elimination + time tracking
+        for i in V_e:
+            for j in V_e:
+                if G_e.has_edge(i, j):
+                    model.addConstr(t[j] >= t[i] + self.gamma[0] * G_e[i][j]['travel_time'] + self.t_max * (x[edge_to_no[(i, j)]] - 1))
+                    model.addConstr(t[j] <= t[i] + self.gamma[1] * G_e[i][j]['travel_time'] + self.t_max * (1 - x[edge_to_no[(i, j)]]))
+                    
+        # The following constraints can be captured by the previous constraint
+        #// for e in E_e:
+        #//     i, j = e[:2]
+        #//     # We need one more set of important constraints, which equals the time stamp of the start node to that of the end node in any aritificial edges.
+        #//     if G_e[i][j]['is_artificial'] == 1:
+        #//         model.addConstr(t[j] <= t[i] + t_max * (1 - x[edge_to_no[(i, j)]]))
+            
+        #//     if G_e[i][j]['is_av'] == 0:
+        #//         model.addConstr(t[j] <= t[i] + G_e[i][j]['travel_time'] + t_max * (1 - x[edge_to_no[(i, j)]]))
+        
+        
+        ## Do not violate the budget
+        #* This is simplied constraint compared to the original MILP
+        for e in E_e:
+            i, j = e[:2]
+            if G_e[i][j]['is_av'] == 0:
+                model.addConstrs(x[edge_to_no[(i, j)]] == alpha[edge_to_no[(i, j)], q] + beta[edge_to_no[(i, j)], q]
+                                for q in Q if self.budget_indicator[q] == 0)
+                model.addConstrs(t[j] <= self.other_time_stamps[q] + self.t_max * (1 - alpha[edge_to_no[(i, j)], q])
+                                for q in Q if self.budget_indicator[q] == 0)
+                model.addConstrs(t[i] >= self.other_time_stamps[q+1] + self.t_max * (beta[edge_to_no[(i, j)], q] - 1)
+                            for q in Q if self.budget_indicator[q] == 0)
+
+        # Set the makespan
+        #// model.addConstrs(t[i] <= makespan for i in range(len(V_e)))
+
+        
+        # Add the objective
+        model.setObjective(sum(x[edge_to_no[(i, j)]] * G_e[i][j]['av_cost'] for i in V_e for j in V_e if G_e.has_edge(i, j)),
+                        GRB.MINIMIZE)
+
+        # Solve the TSP
+        model.optimize()
+        
+        
+        # Infeasible (status code = 3), or objective is worse than the cutoff value (status code = 6), or no feasible solution found within the time limit (status code = 9)
+        if model.Status == 3 or model.Status == 6 or (model.Status == 9 and model.SolCount == 0):
+            print(model.Status)
+            return False, D, 0
+        
+
+        # Extract the routes and time stamps
+        new_route, new_time_stamps = utils.extract_single_route_n_times(G_e, len(V), x, t, new_to_old, edge_to_no, departure, arrival)
+        
+        self.routes[v_2_re_route] = new_route
+        self.all_time_stamps[v_2_re_route] = new_time_stamps 
     
         #* Returned values are: re_routing success, unserved customers, obj value, and G_adjusted
-        return True, None, model.ObjVal, G_adjusted
-        
+        return True, None, model.ObjVal
     
-    def original_route_cost(vehicle):
+    
+    def original_route_cost(self, vehicle):
         cost = 0
-        route = routes[vehicle]
+        route = self.routes[vehicle]
         for i, j in zip(route[:-1], route[1:]):
-                cost += G[i][j]['av_cost']
+                cost += self.G[i][j]['av_cost']
         
         return cost
     
-    def HDV_route_cost(vehicle):
+    
+    #TODO: This is not the correct cutoff value. We should re-solve the TSP given the customers originally served by the vehicle
+    def HDV_route_cost(self, vehicle):
         cost = 0
-        route = routes[vehicle]
+        route = self.routes[vehicle]
         for i, j in zip(route[:-1], route[1:]):
-                cost += G[i][j]['non_av_cost']
+                cost += self.G[i][j]['non_av_cost']
         
         return cost
+
+            
+    def solve(self):
         
-    def main():
-        
-        D_bar = []
         cost = 0
-        G_adjusted = G
-        num_routes = len(clusters.keys())
-        discarded_routes = []
         
-        for v_2_re_route in range(num_routes):
+        for v_2_re_route in range(self.num_routes):
             
-            # print(v_2_re_route)
-            violated, budget_indicator, other_time_stamps = budget_violation_check(v_2_re_route, discarded_routes, G_adjusted)
+            violated = self.budget_violation_check(v_2_re_route)
             
-            # print(budget_indicator)
             if not violated: 
-                cost +=  original_route_cost(v_2_re_route)
+                cost +=  self.original_route_cost(v_2_re_route)
                 print("Route-"+str(v_2_re_route)+" does not violate the budget. Continue.")
                 continue
             
             # Call the constrained TSP solver
             print("Route-"+str(v_2_re_route)+" violates the budget. Try to re-route it.")
-            success, unserved, route_cost, G_adjusted = re_route_one_vehicle(v_2_re_route, budget_indicator, other_time_stamps, G_adjusted)
+            success, unserved, route_cost = self.re_route_one_vehicle(v_2_re_route)
             
             cost += route_cost
             
             if success:
-                print("Re-routing succeeds!")
+                print(colored("Re-routing succeeds!", 'green'))
             
             else:
-                print("Re-routing fails. Unserved customers will be served by HDVs.")
-                D_bar += [int(cus[-1][1:]) for cus in unserved]
-                discarded_routes.append(v_2_re_route)
+                print(colored("Re-routing fails. Unserved customers will be served by HDVs.", 'yellow'))
+                self.D_bar += [int(cus[-1][1:]) for cus in unserved]
+                self.discarded_routes.append(v_2_re_route)
                 continue
     
         #// updated_routes = [routes[i] for i in range(num_routes) if i not in discarded_routes]
         #// updated_all_time_stamps = [all_time_stamps[i] for i in range(num_routes) if i not in discarded_routes]
         
         # Delete the routes that serve D_bar
-        for i in range(num_routes):
-            if i in discarded_routes:
-                del routes[i]
-                del all_time_stamps[i]
+        for i in range(self.num_routes):
+            if i in self.discarded_routes:
+                del self.routes[i]
+                del self.all_time_stamps[i]
         
         
-        return cost, routes, all_time_stamps, D_bar, discarded_routes, G_adjusted
-    
-    #* The main entry of the frp-rerouting
-    return main()
-
+        return cost, self.routes, self.all_time_stamps, self.D_bar, self.discarded_routes, self.G_adjusted
     
 
 
-class google_or_solver():
+
+# def frp_rerouting(G, routes, all_time_stamps, clusters, t_max, demand, capacity, budget, gamma, num_layer, dir):
+    
+    
+
+#     def budget_violation_check(v_2_re_route, discarded_routes, G_adjusted):
+        
+#         # Compute the budget indicator for the subsequent re-routing
+        
+#         all_job_start, all_job_end = utils.extract_start_n_end_time(G_adjusted, all_time_stamps)
+#         # all_job_start_dict = dict(zip(range(len(clusters)), all_job_start))
+#         # all_job_end_dict = dict(zip(range(len(clusters)), all_job_end)) 
+#         dispatched_vehicles = [key for key in clusters if clusters[key] != [] and key not in discarded_routes]
+                
+#         other_job_start = [r for i, r in enumerate(all_job_start) if i != v_2_re_route and i not in discarded_routes]
+#         other_job_end = [r for i, r in enumerate(all_job_end) if i != v_2_re_route and i not in discarded_routes]
+        
+#         other_time_stamps = list(set([element for innerList in other_job_start + other_job_end for element in innerList]))
+#         other_time_stamps.sort()
+#         Q = np.arange(len(other_time_stamps))
+#         other_time_stamps.append(t_max)
+        
+#         remaining_v = deepcopy(dispatched_vehicles)
+#         remaining_v.remove(v_2_re_route)
+
+#         budget_indicator = []
+        
+#         for i in range(len(Q)):
+#             ss = other_time_stamps[i]
+#             tt = other_time_stamps[i+1]
+            
+#             control_q = 0
+#             for v in remaining_v:
+#                 bb = False
+#                 sss = all_job_start[v]
+#                 ttt = all_job_end[v]
+#                 for j in range(len(sss)):
+#                     if ss >= sss[j] and tt <= ttt[j]:
+#                         bb = True
+#                 if bb == True:
+#                     control_q += 1
+            
+#             if control_q >= budget:
+#                 budget_indicator.append(0)
+#             else:
+#                 budget_indicator.append(1)
+                
+#         # Check whether the current route violates the budget
+#         violated = False
+#         for i in range(len(Q)):
+            
+#             if budget_indicator[i] == 1:
+#                 continue
+            
+#             ss = other_time_stamps[i]
+#             tt = other_time_stamps[i+1]
+#             sss = all_job_start[v_2_re_route]
+#             ttt = all_job_end[v_2_re_route]
+#             for j in range(len(sss)):
+#                 if ss >= sss[j] and tt <= ttt[j]:
+#                     violated = True
+                    
+#         return violated, budget_indicator, other_time_stamps
+            
+    
+    
+#     def re_route_one_vehicle(v_2_re_route, budget_indicator, other_time_stamps, G_adjusted):
+        
+#         # if v_2_re_route != 0:
+#         #     return 0, 0,0 ,0
+        
+#         # print("===========")
+#         # print(len(other_time_stamps))
+#         # print(len(budget_indicator))
+        
+#         Q = np.arange(len(other_time_stamps)-1)
+        
+        
+#         K = clusters[v_2_re_route][:1]
+#         D = clusters[v_2_re_route][1:]
+        
+#         demand_subset = []
+#         for cus in D:
+#             cus_index = int(cus[-1][1:])
+#             demand_subset.append(demand[cus_index])
+
+
+#         for e in G.edges:
+#             G[e[0]][e[1]]['is_artificial'] = 0
+  
+    
+        
+#         G_s = graph_pre_pruning(G, K, D)
+        
+    
+#         # Add merged edges in the pruned graph to the original graph for time stamps extraction in next iteration
+#         G_adjusted = utils.graph_edge_adjustment(G_s, G_adjusted)
+    
+#         V = list(G_s.nodes)
+#         _, new_to_old = utils.re_index_nodes(V)
+        
+#         G_e, departure, arrival, D_e, D_e_2d, demand_dict = utils.contruct_time_expanded_graph(G_s, num_layer, K, D, demand_subset)
+    
+        
+#         # if v_2_re_route == 0:
+#         #     print("G_e information ================ ")
+#         #     print(len(G_e.edges))
+#         #     for e in G_e.edges:
+#         #         print(G_e[e[0]][e[1]])
+            
+#         #TODO: The discount_factor and inflated_factor for AV_enabled roads are needed here to conduct sensitivity analysis
+#         utils.assign_cost_n_travel_time(G_e)
+        
+#         E_e = list(G_e.edges)    
+#         V_e = list(G_e.nodes)
+#         edge_to_no, _ = utils.re_index_edges(E_e)
+        
+
+#         # Create a new model
+#         model = gp.Model('re-routing-vehicle-'+str(v_2_re_route))
+
+#         # Model params
+        
+#         # logging
+#         path = dir + '/re_routing_log_vehicle_'+str(v_2_re_route)+'.txt'
+#         if os.path.exists(path):
+#             os.remove(path)
+#         model.Params.LogFile = path
+#         model.Params.LogToConsole = 0
+
+#         # strategies
+#         # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
+#         model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
+#         model.Params.ImproveStartTime = 120 # Give up proving optimality after 2 min
+        
+#         # Termination
+#         model.Params.BestObjStop = 1.05 * original_route_cost(v_2_re_route)  # The original route cost is a natural lower bound. 
+#                                                                              # A re-route is good if the cost is < 1.05 original route cost
+        
+#         model.Params.TimeLimit = 5 # Terminate the MILP solver after 5 min
+#         model.Params.Cutoff = HDV_route_cost(v_2_re_route) # cutoff the solution with even worse cost than dispatching an HDV
+        
+
+#         # Create variables
+#         #* The lower bounds for all variables are zero by default
+#         x = model.addMVar(len(E_e), vtype=GRB.BINARY)
+#         y = model.addMVar(len(V_e), vtype=GRB.BINARY)
+#         t = model.addMVar(len(V_e), ub = np.repeat(t_max, len(V_e)), vtype=GRB.CONTINUOUS)
+
+#         alpha = model.addMVar((len(E_e), len(Q)), vtype=GRB.BINARY)
+#         beta = model.addMVar((len(E_e), len(Q)), vtype=GRB.BINARY)
+
+#         #// makespan = model.addVar(ub = t_max, vtype=GRB.CONTINUOUS)
+
+#         # Add constraints
+
+#         ## Flow conservation at all nodes (except the depot)
+#         for i in list(set(V_e) - set([departure, arrival])):
+#             out_no = [edge_to_no[e] for e in list(G_e.out_edges(i))]
+#             in_no = [edge_to_no[e] for e in list(G_e.in_edges(i))]
+#             model.addConstr(sum(x[out_no]) == sum(x[in_no]))
+#             model.addConstr(sum(x[out_no]) <= 1)
+        
+#         ## Flow conservation at the depot
+#         departure_out = [edge_to_no[e] for e in list(G_e.out_edges(departure))]
+#         arrival_in = [edge_to_no[e] for e in list(G_e.in_edges(arrival))]
+
+#         model.addConstr(sum(x[departure_out]) == y[departure])
+#         model.addConstr(sum(x[arrival_in]) == y[arrival])
+#         model.addConstr(y[departure] == y[arrival])
+
+#         ## Prohibit vehicles from passing through the depot
+#         departure_in = [edge_to_no[e] for e in list(G_e.in_edges(departure))]
+#         model.addConstr(x[departure_in] == 0)
+        
+#         ## Allow a vehicle to pass thru a customer without serving it 
+#         for i in D_e:
+#             i_in = [edge_to_no[e] for e in list(G_e.in_edges(i))]
+#             model.addConstr(sum(x[i_in]) >= y[i])
+
+#         ## Each customer is only served by one vehicle
+#         model.addConstrs(sum(y[i] for i in D_e_2d[:, h]) == 1 for h in range(len(D)))
+
+#         ## Transition
+#         for i in D_e:
+#             model.addConstr(sum(x[edge_to_no[(i, j)]] for j in D_e if G_e.has_edge(i, j) and G_e[i][j]['is_artificial'] == 1) <= y[i])
+
+#         ## Capacity limit
+#         model.addConstr(sum(demand_dict[i] * y[i] for i in D_e) <= capacity)
+
+
+#         ## Subtour elimination + time tracking
+#         for i in V_e:
+#             for j in V_e:
+#                 if G_e.has_edge(i, j):
+#                     model.addConstr(t[j] >= t[i] + gamma[0] * G_e[i][j]['travel_time'] + t_max * (x[edge_to_no[(i, j)]] - 1))
+#                     model.addConstr(t[j] <= t[i] + gamma[1] * G_e[i][j]['travel_time'] + t_max * (1 - x[edge_to_no[(i, j)]]))
+                    
+#         # The following constraints can be captured by the previous constraint
+#         #// for e in E_e:
+#         #//     i, j = e[:2]
+#         #//     # We need one more set of important constraints, which equals the time stamp of the start node to that of the end node in any aritificial edges.
+#         #//     if G_e[i][j]['is_artificial'] == 1:
+#         #//         model.addConstr(t[j] <= t[i] + t_max * (1 - x[edge_to_no[(i, j)]]))
+            
+#         #//     if G_e[i][j]['is_av'] == 0:
+#         #//         model.addConstr(t[j] <= t[i] + G_e[i][j]['travel_time'] + t_max * (1 - x[edge_to_no[(i, j)]]))
+        
+        
+#         ## Do not violate the budget
+#         #* This is simplied constraint compared to the original MILP
+#         for e in E_e:
+#             i, j = e[:2]
+#             if G_e[i][j]['is_av'] == 0:
+#                 model.addConstrs(x[edge_to_no[(i, j)]] == alpha[edge_to_no[(i, j)], q] + beta[edge_to_no[(i, j)], q]
+#                                 for q in Q if budget_indicator[q] == 0)
+#                 model.addConstrs(t[j] <= other_time_stamps[q] + t_max * (1 - alpha[edge_to_no[(i, j)], q])
+#                                 for q in Q if budget_indicator[q] == 0)
+#                 model.addConstrs(t[i] >= other_time_stamps[q+1] + t_max * (beta[edge_to_no[(i, j)], q] - 1)
+#                             for q in Q if budget_indicator[q] == 0)
+
+#         # Set the makespan
+#         #// model.addConstrs(t[i] <= makespan for i in range(len(V_e)))
+
+        
+#         # Add the objective
+#         model.setObjective(sum(x[edge_to_no[(i, j)]] * G_e[i][j]['av_cost'] for i in V_e for j in V_e if G_e.has_edge(i, j)),
+#                         GRB.MINIMIZE)
+
+#         # Solve the TSP
+#         model.optimize()
+        
+        
+#         # Infeasible (status code = 3), or objective is worse than the cutoff value (status code = 6), or no feasible solution found within the time limit (status code = 9)
+#         if model.Status == 3 or model.Status == 6 or (model.Status == 9 and model.SolCount == 0):
+#             return False, D, 0, G_adjusted
+        
+
+#         # Extract the routes and time stamps
+#         new_route, new_time_stamps = utils.extract_single_route_n_times(G_e, len(V), x, t, new_to_old, edge_to_no, departure, arrival)
+        
+#         routes[v_2_re_route] = new_route
+#         all_time_stamps[v_2_re_route] = new_time_stamps 
+    
+#         #* Returned values are: re_routing success, unserved customers, obj value, and G_adjusted
+#         return True, None, model.ObjVal, G_adjusted
+        
+    
+#     def original_route_cost(vehicle):
+#         cost = 0
+#         route = routes[vehicle]
+#         for i, j in zip(route[:-1], route[1:]):
+#                 cost += G[i][j]['av_cost']
+        
+#         return cost
+    
+#     def HDV_route_cost(vehicle):
+#         cost = 0
+#         route = routes[vehicle]
+#         for i, j in zip(route[:-1], route[1:]):
+#                 cost += G[i][j]['non_av_cost']
+        
+#         return cost
+        
+#     def main():
+        
+#         D_bar = []
+#         cost = 0
+#         G_adjusted = G
+#         num_routes = len(clusters.keys())
+#         discarded_routes = []
+        
+#         for v_2_re_route in range(num_routes):
+            
+#             # print(v_2_re_route)
+#             violated, budget_indicator, other_time_stamps = budget_violation_check(v_2_re_route, discarded_routes, G_adjusted)
+            
+#             # print(budget_indicator)
+#             if not violated: 
+#                 cost +=  original_route_cost(v_2_re_route)
+#                 print("Route-"+str(v_2_re_route)+" does not violate the budget. Continue.")
+#                 continue
+            
+#             # Call the constrained TSP solver
+#             print("Route-"+str(v_2_re_route)+" violates the budget. Try to re-route it.")
+#             success, unserved, route_cost, G_adjusted = re_route_one_vehicle(v_2_re_route, budget_indicator, other_time_stamps, G_adjusted)
+            
+#             cost += route_cost
+            
+#             if success:
+#                 print(colored("Re-routing succeeds!", 'green'))
+            
+#             else:
+#                 print(colored("Re-routing fails. Unserved customers will be served by HDVs.", 'yellow'))
+#                 D_bar += [int(cus[-1][1:]) for cus in unserved]
+#                 discarded_routes.append(v_2_re_route)
+#                 continue
+    
+#         #// updated_routes = [routes[i] for i in range(num_routes) if i not in discarded_routes]
+#         #// updated_all_time_stamps = [all_time_stamps[i] for i in range(num_routes) if i not in discarded_routes]
+        
+#         # Delete the routes that serve D_bar
+#         for i in range(num_routes):
+#             if i in discarded_routes:
+#                 del routes[i]
+#                 del all_time_stamps[i]
+        
+        
+#         return cost, routes, all_time_stamps, D_bar, discarded_routes, G_adjusted
+    
+#     #* The main entry of the frp-rerouting
+#     return main()
+
+    
+
+# TODO: Need to understand why it returns infeasibility for some feasible CVRP instances
+class GoogleORCVRPSolver():
     
     def __init__(self, G, I, path_matrix, dist_matrix, customers_subset = None, num_vehicles = None):
-        self.G  = G
+        
+        self.G = G
         self.demands = I.demands
         self.coordinates = I.coordinates
         self.num_vehicles = int(I.name.split('-')[-1][1:])
@@ -941,17 +1651,22 @@ class google_or_solver():
         
         if customers_subset != None:
 
-            # Only use a subset of customers to facilitate the last step of the algo
+            #* Only use a subset of customers to facilitate the last step of the algorithm
+            
             self.num_vehicles= num_vehicles
             self.capacity = np.repeat(I.capacity, self.num_vehicles)
             
-            customers_subset.append(0)
-            customers_subset.sort()
-            self.demands = [I.demands[cus] for cus in range(len(I.demands)) if cus in customers_subset]
             
-            self.coordinates = [I.coordinates[cus] for cus in range(len(I.coordinates)) if cus in customers_subset]
             
-            self.dist_matrix = self.dist_matrix[customers_subset][:, customers_subset]
+            self.customers_subset.append(0)
+            self.customers_subset.sort()
+            
+            self.dist_matrix = self.dist_matrix[self.customers_subset][:, self.customers_subset]
+        
+            
+            self.demands = [I.demands[cus] for cus in range(len(I.demands)) if cus in self.customers_subset]
+            self.coordinates = [I.coordinates[cus] for cus in range(len(I.coordinates)) if cus in self.customers_subset]
+
             
             #// print(self.demands, self.capacity, self.dist_matrix, self.coordinates)
           
@@ -1091,17 +1806,17 @@ class google_or_solver():
         # Setting first solution heuristic.
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
+            routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC)
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-        search_parameters.time_limit.FromSeconds(1)
+        search_parameters.time_limit.seconds = 30
 
         # Solve the problem.
         solution = routing.SolveWithParameters(search_parameters)
-
+                
         if solution:
-            # Print solution on console.
             
+            # Print solution on console.
             if self.customers_subset == None:
                 self.print_solution(manager, routing, solution)
                 

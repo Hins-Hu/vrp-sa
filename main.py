@@ -4,9 +4,9 @@ import random
 import numpy as np
 import algorithms as algo
 import os
-import sys
 import argparse
 import csv
+from termcolor import colored
 
 
 """
@@ -118,8 +118,8 @@ Solve the CVRP
 print("Start to solve the CVRP instance.")
 
 # TODO: Build another HCVRP solver to replace this one
-solver_LB = algo.google_or_solver(G, I, path_av, cost_av)
-solver_UB = algo.google_or_solver(G, I, path_non_av, cost_non_av)
+solver_LB = algo.GoogleORCVRPSolver(G, I, path_av, cost_av)
+solver_UB = algo.GoogleORCVRPSolver(G, I, path_non_av, cost_non_av)
 
 LB, routes, all_time_stamps, clusters = solver_LB.solve()
 UB, _ , _, _ = solver_UB.solve()
@@ -139,11 +139,8 @@ status = algo.frp_reschedule(G, routes, all_time_stamps, t_max * t_max_factor, b
 
 # Visualize the re-scheduling if it is feasible
 if status == 1:
-    print("Solution found for the re-scheduling MILP!")
     utils.visualize_re_scheduling(dir)
-else:
-    print("The re-scheduling MILP is infeasible.")
-    
+
     
     
 """
@@ -151,10 +148,11 @@ Solve the re-routing FRP
 """
 
 print("Start to solve the re-routing FRP.")
-cost, routes, all_time_stamps, D_bar, discarded_routes, G_adjusted = algo.frp_rerouting(G, routes, all_time_stamps, clusters, t_max * t_max_factor, I.demands, I.capacity, budget, gamma, num_layer, dir)
+re_routing_solver = algo.ReRoutingFRPSolver(G, I, routes, all_time_stamps, clusters, t_max * t_max_factor, budget, gamma, num_layer, dir)
+cost, new_routes, new_all_time_stamps, D_bar, G_adjusted = re_routing_solver.solve()
 
 # Visualize 
-utils.visualize_re_routing(dir, G_adjusted, all_time_stamps, discarded_routes)
+utils.visualize_re_routing(dir, G_adjusted, new_all_time_stamps)
 
 
 
@@ -165,7 +163,7 @@ Replace unserved AV routes with HDV routes
 print("Dispatch HDVs to serve the unserved customers.")
 # Serve the unserved customers by HDVs 
 if D_bar != []: 
-    solver_4_unserved = algo.google_or_solver(G, I, path_non_av, cost_non_av, D_bar, len(discarded_routes))
+    solver_4_unserved = algo.GoogleORCVRPSolver(G, I, path_non_av, cost_non_av, D_bar, len(routes) - len(new_routes))
     replaced_cost, _, _, _ = solver_4_unserved.solve()
     cost += replaced_cost
     
@@ -174,13 +172,12 @@ if D_bar != []:
 Output the results
 """
 
-print("The LB, cost, and UB are: ")
-print(LB, cost, UB)
+print(colored("The LB, cost, and UB are: ", 'cyan'))
+print(colored(LB, 'cyan'), colored(cost, 'cyan'), colored(UB, 'cyan'))
 
 with open ('result.csv', 'a', newline = '') as file:
     writer = csv.writer(file)
     writer.writerow([dir, LB, status, cost, UB])
-
 
 
 

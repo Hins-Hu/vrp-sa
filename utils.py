@@ -909,7 +909,7 @@ def visualize_re_scheduling(dir):
     
     
     
-def visualize_re_routing(dir, G_adjusted, all_time_stamps, discarded_routes):
+def visualize_re_routing(dir, G_adjusted, all_time_stamps):
 
 
     old_routes_start = list(json.load(open(dir + '/old_schedule_start.json')).values())
@@ -935,18 +935,21 @@ def visualize_re_routing(dir, G_adjusted, all_time_stamps, discarded_routes):
         ax.broken_barh(old, ((v+1)*20, bar_width), facecolors = 'tab:blue')
 
 
-    # New
-    remaining_routes = [i for i in range(len(old_routes_start)) if i not in discarded_routes]
+    # New    
+    vehicles_mapping = list(all_time_stamps.keys())
     
     for v in range(len(new_routes_start)):
         new = [np.vstack((s, t)) for s, t in zip(new_routes_start, new_routes_end)][v]
         new = [x for x in zip(*new)]
         new = [(st[0], st[1] - st[0]) for st in new]
         
-        v = remaining_routes[v]
+        v = vehicles_mapping[v]
         ax.broken_barh(new, ((v+1)*20-6, bar_width), facecolors = 'tab:red')
 
     ax.set_xlabel('Time intervals when vehicles need remote control')
     ax.set_yticks(old_tick_pos + new_tick_pos, labels = old_tick_name + new_tick_name)
     plt.savefig(dir + '/re-routing.png')
+
+
+
 
