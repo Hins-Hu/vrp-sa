@@ -1,0 +1,3 @@
+[submodule "HGS-CVRP"]
+	path = HGS-CVRP
+	url = https://github.com/Hins-Hu/HGS-CVRP.git
