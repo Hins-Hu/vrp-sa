@@ -390,7 +390,7 @@ def frp_reschedule(G, routes, all_time_stamps, t_max, budget, dir, gamma, obj="m
     model = gp.Model('rescheduling')
 
     # Set the file path for logging and disable the console output
-    path = dir + '/re_scheduling_frp_log.txt'
+    path = dir + '/re_scheduling_frp_log.log'
     if os.path.exists(path):
         os.remove(path)
     model.Params.LogFile = path
@@ -399,10 +399,10 @@ def frp_reschedule(G, routes, all_time_stamps, t_max, budget, dir, gamma, obj="m
     # strategies
     # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
     model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
-    model.Params.ImproveStartTime = 120 # Give up proving optimality after 2 min
+    model.Params.ImproveStartTime = 10 # Give up proving optimality after 2 min
     
     # Termination    
-    model.Params.TimeLimit = 240 # Terminate the MILP solver after 5 min
+    model.Params.TimeLimit = 20 # Terminate the MILP solver after 5 min
     
     
 
@@ -721,7 +721,7 @@ class ReRoutingFRPSolver():
         # Model params
         
         # logging
-        path = self.dir + '/re_routing_log_vehicle_'+str(v_2_re_route)+'.txt'
+        path = self.dir + '/re_routing_log_vehicle_'+str(v_2_re_route)+'.log'
         if os.path.exists(path):
             os.remove(path)
         model.Params.LogFile = path
@@ -730,13 +730,13 @@ class ReRoutingFRPSolver():
         # strategies
         # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
         model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
-        model.Params.ImproveStartTime = 30 # Give up proving optimality after 2 min
+        model.Params.ImproveStartTime = 10 # Give up proving optimality after 2 min
         
         # Termination
         model.Params.BestObjStop = 1.05 * self.original_route_cost(v_2_re_route)  # The original route cost is a natural lower bound. 
                                                                              # A re-route is good if the cost is < 1.05 original route cost
         
-        model.Params.TimeLimit = 60 # Terminate the MILP solver after 5 min
+        model.Params.TimeLimit = 20 # Terminate the MILP solver after 5 min
         
         #TODO: Replacing AV cost with HDV cost naively is incorrect. We need to re-solve the TSP
         model.Params.Cutoff = self.HDV_route_cost(v_2_re_route) # cutoff the solution with even worse cost than dispatching an HDV
@@ -854,7 +854,7 @@ class ReRoutingFRPSolver():
         
     
         #* Returned values are: re_routing success, new routing cost, new route, new timestamps 
-        return True, model.ObjVal, new_route, new_time_stamps
+        return True, model.getObjective(), new_route, new_time_stamps
     
     
     def original_route_cost(self, vehicle):
@@ -1631,9 +1631,111 @@ class ReRoutingFRPSolver_RandomOrder():
 #     #* The main entry of the frp-rerouting
 #     return main()
 
+
+class UHGS_CVRPSolver():
+    
+    def __init__(self, instance_path, dir, G, I, t = 3):
+    
+        self.tmp_path = dir + '/tmp_file_4_hgs.vrp'
+        
+        with open(instance_path, "r") as source:
+            contents = source.read()
+            
+        with open(self.tmp_path, "w") as destination:
+            destination.write(contents)
+    
+        self.dir = dir
+        self.G = G
+        self.I = I
+        self.t = t
+        
+        self.result = None
+    
+        
+        
+    def add_explicit_dist_mtx(self, dist_matrix):
+        
+        with open(self.tmp_path, "a") as file:
+            
+            file.write("DIST_SECTION\n")
+            for i in range(len(self.I.coordinates)):
+                file.write(str(i+1))
+                for j in range(len(self.I.coordinates)):
+                    file.write(" " + str(dist_matrix[i][j]))
+                file.write("\n")
+                
+                
+    def solve(self, output_file):
+        
+        #* Call the C++ UHGS-CVRP solver to solve the instance
+        arg_1 = 'HGS-CVRP/build/hgs'
+        arg_2 = self.tmp_path
+        arg_3 = self.dir + '/' + output_file
+        self.result = arg_3
+        
+        arg_4 = '-t ' + str(self.t)
+        arg_5 = '-round ' + str(0)
+        arg_6 = '-seed ' + str(0)
+        
+        args_list = [arg_1, arg_2, arg_3, arg_4, arg_5, arg_6]
+        
+        os.system(' '.join(args_list))
+        os.remove(self.tmp_path)
+        
+        
+    def extract_results(self, path_matrix):
+        
+        routes_dict = {}
+        routes_list = []
+        clusters_dict = {}
+        
+        with open(self.result, 'r') as file:
+            for line in file:
+                if line.startswith('Route'):
+                    
+                    s1, s2 = line.split(': ')
+                    route_num = int(s1[-1]) - 1
+                    
+                    
+                    s2 = [0] + [int(node_index) for node_index in s2.split(' ')] + [0]
+                    route = []
+                    cluster = []
+                    
+                    for i in range(len(s2)-1):
+                        
+                        x, y = self.I.coordinates[s2[i]]
+                        x_next, y_next = self.I.coordinates[s2[i+1]]
+                        node = (x, y, 'c'+str(s2[i]))
+                        node_next = (x_next, y_next, 'c'+str(s2[i+1]))
+                        path = path_matrix[str(node)+'-'+str(node_next)]
+                        if i < len(s2) - 2:
+                            route += path[:-1]
+                        else:
+                            route += path
+                        cluster.append(node)
+                        
+                    
+                    routes_dict[route_num] = route
+                    routes_list.append(route)      
+                    clusters_dict[route_num] = cluster
+                    
+                elif line.startswith('Cost'):
+                    cost = float(line.split(' ')[-1])
+        
+        time_stamps = utils.time_tracker_all_routes(self.G, routes_list)
+        time_stamps_dict = dict(zip(range(len(time_stamps)), time_stamps))
+        
+        return cost, routes_dict, time_stamps_dict, clusters_dict
+        
+        
+        
+
+
+        
     
 
-# TODO: Need to understand why it returns infeasibility for some feasible CVRP instances
+#! There may be bugs in the solver for two reasons: (1) The result is not consistent with the HGS-CVRP solver. 
+        #!(2) Some feasible solutions are sovled to be infeasible.
 class GoogleORCVRPSolver():
     
     def __init__(self, G, I, path_matrix, dist_matrix, customers_subset = None, num_vehicles = None):
@@ -1809,7 +1911,7 @@ class GoogleORCVRPSolver():
             routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC)
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-        search_parameters.time_limit.seconds = 30
+        search_parameters.time_limit.seconds = 3
 
         # Solve the problem.
         solution = routing.SolveWithParameters(search_parameters)
@@ -1827,7 +1929,10 @@ class GoogleORCVRPSolver():
             print("The CVRP is not feasible")
             sys.exit()
         
-        
+   
+#TODO: The generic TSP solver
+class GoogleORTSPSolver():
+    ...
 
 
 

@@ -953,3 +953,38 @@ def visualize_re_routing(dir, G_adjusted, all_time_stamps):
 
 
 
+def write_vrp_instance(dir, I, D_bar, dist_matrix):
+    
+    D_bar.insert(0, 0)
+    
+    with open (dir + '/tmp_file_4_hgs.vrp', 'w') as file:
+        file.write("NAME : tmp\n")
+        file.write("COMMENT : tmp\n")
+        file.write("TYPE : CVRP\n")
+        file.write("DIMENSION : " + str(len(D_bar)) + "\n")
+        file.write("EDGE_WEIGHT_TYPE : EUC_2D\n")
+        file.write("CAPACITY : " + str(I.capacity) + "\n")
+        file.write("NODE_COORD_SECTION\n")
+        for i in range(len(D_bar)):
+            file.write(str(i + 1))
+            file.write(' ' + str(I.coordinates[D_bar[i]][0]))
+            file.write(' ' + str(I.coordinates[D_bar[i]][1]) + '\n')
+        file.write("DEMAND_SECTION\n")
+        for i in range(len(D_bar)):
+            file.write(str(i + 1))
+            file.write(' ' + str(I.demands[D_bar[i]]) + '\n')
+        file.write("DEPOT_SECTION\n")
+        file.write('1\n-1\nEOF\n')
+        
+        file.write("DIST_SECTION\n")
+        for i in range(len(D_bar)):
+            file.write(str(i+1))
+            for j in range(len(D_bar)):
+                file.write(" " + str(dist_matrix[D_bar[i]][D_bar[j]]))
+            file.write("\n")
+            
+    return dir + '/tmp_file_4_hgs.vrp'
+        
+        
+        
+

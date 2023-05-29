@@ -3,10 +3,10 @@ import utils
 import random
 import numpy as np
 import algorithms as algo
-import os
 import argparse
 import csv
 from termcolor import colored
+import sys
 
 
 """
@@ -17,6 +17,7 @@ Arguments
 parser = argparse.ArgumentParser(description ='The algorithmic pipeline')
  
 parser.add_argument('instance', help = "The CVRP instance used") 
+parser.add_argument('path', help = "The output path")
 parser.add_argument('-g', dest = "grid_size", help = "The # of neighbhoods divided by the grid in the underlying network",
                     default = 5, required = False, type = int, choices = range(1, 11))
 parser.add_argument('-b', dest = "budget", help = "The budget for the additional resources (i.e. remote control)", 
@@ -43,11 +44,12 @@ args = parser.parse_args()
 Params
 """
 
+# Link to the instance file
+instance_path = 'Instances/' + args.instance + '.vrp'
+
 # Create a dir
-dir = args.instance
-if not os.path.exists(dir):
-    os.mkdir(dir)
-utils.clean_dir(dir)
+dir = args.path
+instance = args.instance
 
 # Set seeds
 seed = 1
@@ -88,7 +90,7 @@ Instance and Network
 """
 
 # Load the CVRP instances
-I, sol = cvrplib.download(args.instance, solution=True)
+I = cvrplib.download(args.instance)
 
 # Boundary of the instance
 x_min, y_min = np.min(np.array(I.coordinates), axis=0)
@@ -108,6 +110,7 @@ depot = [(I.coordinates[0][0], I.coordinates[0][1], 'd')]
 utils.assign_cost_n_travel_time(G, discount_factor_av, inflated_factor_av)
 
 # Compute the distance matrices 
+print("Computing the distance matrix and the path matrix...")
 cost_av, cost_non_av, path_av, path_non_av = utils.dist_n_path_matrices_4_experiments(G, I)
 
 
@@ -115,14 +118,22 @@ cost_av, cost_non_av, path_av, path_non_av = utils.dist_n_path_matrices_4_experi
 Solve the CVRP
 """
 
-print("Start to solve the CVRP instance.")
+print("Start to solve the CVRP instance with av_cost.")
+sys.stdout.flush()
 
 # TODO: Build another HCVRP solver to replace this one
-solver_LB = algo.GoogleORCVRPSolver(G, I, path_av, cost_av)
-solver_UB = algo.GoogleORCVRPSolver(G, I, path_non_av, cost_non_av)
+hgs_LB = algo.UHGS_CVRPSolver(instance_path, dir, G, I, t = 5)
+hgs_LB.add_explicit_dist_mtx(cost_av)
+hgs_LB.solve('LB.sol')
+LB, routes, all_time_stamps, clusters = hgs_LB.extract_results(path_av)
 
-LB, routes, all_time_stamps, clusters = solver_LB.solve()
-UB, _ , _, _ = solver_UB.solve()
+print("Start to solve the CVRP instance with non_av_cost.")
+sys.stdout.flush()
+
+hgs_UB = algo.UHGS_CVRPSolver(instance_path, dir, G, I, t = 5)
+hgs_UB.add_explicit_dist_mtx(cost_non_av)
+hgs_UB.solve('UB.sol')
+UB, _, _, _ = hgs_UB.extract_results(path_non_av)
 
 
 # Extract the latest return time of the fleet
@@ -160,11 +171,15 @@ utils.visualize_re_routing(dir, G_adjusted, new_all_time_stamps)
 Replace unserved AV routes with HDV routes
 """
 
-print("Dispatch HDVs to serve the unserved customers.")
+print("Dispatch HDVs to serve the unserved customers if necessary.")
 # Serve the unserved customers by HDVs 
 if D_bar != []: 
-    solver_4_unserved = algo.GoogleORCVRPSolver(G, I, path_non_av, cost_non_av, D_bar, len(routes) - len(new_routes))
-    replaced_cost, _, _, _ = solver_4_unserved.solve()
+    
+    path = utils.write_vrp_instance(dir, I, D_bar, cost_non_av)
+    hgs_unserved = algo.UHGS_CVRPSolver(path, dir, G, I, t = 5)
+    hgs_unserved.tmp_path = path
+    hgs_unserved.solve('HDV_replacement.sol')
+    replaced_cost, _, _, _ = hgs_unserved.extract_results(path_non_av)
     cost += replaced_cost
     
 
@@ -177,8 +192,7 @@ print(colored(LB, 'cyan'), colored(cost, 'cyan'), colored(UB, 'cyan'))
 
 with open ('result.csv', 'a', newline = '') as file:
     writer = csv.writer(file)
-    writer.writerow([dir, LB, status, cost, UB])
-
+    writer.writerow([instance, LB, status, cost, UB])
 
 
 
