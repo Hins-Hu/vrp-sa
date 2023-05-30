@@ -20,7 +20,9 @@ parser.add_argument('instance', help = "The CVRP instance used")
 parser.add_argument('path', help = "The output path")
 parser.add_argument('-g', dest = "grid_size", help = "The # of neighbhoods divided by the grid in the underlying network",
                     default = 5, required = False, type = int, choices = range(1, 11))
-parser.add_argument('-b', dest = "budget", help = "The budget for the additional resources (i.e. remote control)", 
+parser.add_argument('-bf', dest = "budget_factor", help = "The budget factor", 
+                    default = 2, required = False, type = int, choices = range(1, 4))
+parser.add_argument('-b', dest = "budget", help = "The budget for the additional resources (i.e. remote control). Overwrite the function of budget factor.", 
                     default = None, required = False)
 parser.add_argument('-t', dest = 't_max_factor', help = "The maximum delay factor for the makespan",
                     default = 1.5, required = False, type = float)
@@ -64,9 +66,11 @@ grid_size = args.grid_size
 num_vehicle = int(args.instance.split('-')[-1][1:])
 
 # The budget for the additional resources (i.e. remote control)
-budget = args.budget
-if budget == None:
-    budget = max(1, num_vehicle // 3)
+budget_factor = [1/3, 1/2, 2/3]
+budget = max(1, round(num_vehicle * budget_factor[args.budget_factor - 1]))
+
+if args.budget != None:
+    budget = args.budget
 
 # The maximum delay factor for the makespan
 t_max_factor = args.t_max_factor
@@ -172,14 +176,18 @@ Replace unserved AV routes with HDV routes
 """
 
 print("Dispatch HDVs to serve the unserved customers if necessary.")
+sys.stdout.flush()
+
 # Serve the unserved customers by HDVs 
 if D_bar != []: 
+    
+    print('Unserved: ', D_bar)
     
     path = utils.write_vrp_instance(dir, I, D_bar, cost_non_av)
     hgs_unserved = algo.UHGS_CVRPSolver(path, dir, G, I, t = 5)
     hgs_unserved.tmp_path = path
     hgs_unserved.solve('HDV_replacement.sol')
-    replaced_cost, _, _, _ = hgs_unserved.extract_results(path_non_av)
+    replaced_cost, _, _, _ = hgs_unserved.extract_results(path_non_av)    
     cost += replaced_cost
     
 
@@ -190,9 +198,17 @@ Output the results
 print(colored("The LB, cost, and UB are: ", 'cyan'))
 print(colored(LB, 'cyan'), colored(cost, 'cyan'), colored(UB, 'cyan'))
 
-with open ('result.csv', 'a', newline = '') as file:
+with open (dir + '/result.csv', 'a', newline = '') as file:
     writer = csv.writer(file)
     writer.writerow([instance, LB, status, cost, UB])
 
+
+#*: DEBUG
+# tmp_cost = 0
+# tmp_route = routes[2]
+# for i, j in zip(tmp_route[:-1], tmp_route[1:]):
+        # tmp_cost += G[i][j]['av_cost']
+# print('tmp_cost: ' + str(tmp_cost))
+# print('replaced_cost: ' + str(replaced_cost))
 
 
