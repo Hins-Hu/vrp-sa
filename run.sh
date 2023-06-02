@@ -8,7 +8,7 @@ instances=("P-n16-k8" "P-n19-k2" "P-n20-k2" "P-n21-k2" "P-n22-k2" "P-n23-k8"
 # instances=("P-n50-k7")
 
 # Define the set of t_max_factor
-t_max_factors=("1" "1.2" "1.5")
+t_max_factors=("1" "1.1")
 
 # Define the set of budget_factor
 budget_factors=("1" "2" "3")
@@ -24,6 +24,12 @@ do
         # Define the result folder
         output_folder="Results-${t_f}-${b_f}"
 
+        # Clean the previous results if they exist
+        result_csv="${output_folder}/result-${t_f}-${b_f}.csv"
+        if [ -f "$result_csv" ]; then
+            rm $result_csv
+        fi
+
 
         # Iterate over the inputs
         for i in "${instances[@]}"
@@ -38,7 +44,7 @@ do
             fi
 
             output_file="${output_folder}/${i}/logging.log"
-            nohup python main.py "$i" "$path" "-t" "$t_f" "-bf" "$b_f"> "$output_file" &
+            nohup python main.py "$i" "-p" "$path" "-t" "$t_f" "-bf" "$b_f"> "$output_file" &
         done
 
 

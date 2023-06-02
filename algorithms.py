@@ -343,6 +343,201 @@ def generic_vrp_solver(G, customer, demand, depot, fleet, num_av, capacity, vehi
     
     
 
+#TODO： Make a wrapper for the re-scheduling MILP solver
+class ReSchedulingFRPSolver():
+    
+    def __init__(self, G, routes, all_time_stamps, t_max, budget, dir, gamma) -> None:
+        
+        self.G = G
+        self.routes = routes
+        self.all_time_stamps = all_time_stamps
+        self.t_max = t_max
+        self.budget = budget
+        self.dir = dir
+        self.gamma = gamma
+        
+
+    # A helper function determineing whether job i and job j are in the same route        
+    def __in_the_same_route(self, i, j, num_job):
+        
+        b0 = False
+        
+        cum_num = np.cumsum(num_job)
+        cum_num = np.insert(cum_num, 0, 0)
+        for ind in range(1, len(cum_num)):
+            b1 = cum_num[ind-1] <= i and i < cum_num[ind]
+            b2 = cum_num[ind-1] <= j and j < cum_num[ind]
+            if b1 and b2:
+                b0 = True
+                
+        return b0        
+        
+        
+    def solve(self, obj = "makespan"):
+        
+        
+        num_job = utils.convert_route_to_job(self.G, self.routes)
+        all_job_start, all_job_end = utils.extract_start_n_end_time(self.G, self.all_time_stamps)
+        
+        # Write donw the old schedule
+        dict_all_job_start = dict(zip(range(len(all_job_start)), all_job_start))
+        dict_all_job_end = dict(zip(range(len(all_job_end)), all_job_end))
+        with open(dir + '/old_schedule_start.json', 'w') as outfile:
+            json.dump(dict_all_job_start, outfile)
+        with open(dir + '/old_schedule_end.json', 'w') as outfile:
+            json.dump(dict_all_job_end, outfile)
+        
+        
+        
+        # max_job_end = [np.max(sublist) for sublist in all_job_end]
+        all_job_start = np.array([job for sublist in all_job_start for job in sublist])
+        all_job_end = np.array([job for sublist in all_job_end for job in sublist])
+        duration = all_job_end - all_job_start 
+        
+
+        # Create a new model
+        model = gp.Model('rescheduling')
+
+        # Set the file path for logging and disable the console output
+        path = self.dir + '/re_scheduling_frp_log.log'
+        if os.path.exists(path):
+            os.remove(path)
+        model.Params.LogFile = path
+        model.Params.LogToConsole = 0
+        
+        # strategies
+        # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
+        model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
+        model.Params.ImproveStartTime = 120 # Give up proving optimality
+        
+        # Termination    
+        model.Params.WorkLimit = 30 # Terminate the MILP solver after
+        model.Params.SolutionLimit = 1 # Terminate the MILP when the first feasible solution found
+        
+        if obj == "makespan":
+            
+            # Define variables
+            z = model.addMVar((sum(num_job), self.budget), vtype=GRB.BINARY)
+            c = model.addMVar(sum(num_job), vtype=GRB.CONTINUOUS, lb = all_job_start + duration, ub = np.repeat(self.t_max, sum(num_job)))
+            f = model.addMVar((sum(num_job), sum(num_job)), vtype=GRB.BINARY)
+            c_max = model.addVar(lb = max(all_job_end), ub = self.t_max, vtype=GRB.CONTINUOUS)
+
+            # Constraints
+
+            # Unique assignment of job
+            model.addConstrs(sum(z[i, :]) == 1 for i in range(sum(num_job)))
+
+            # Maximum delay for each pair of job
+            model.addConstrs(c[j] - duration[j] - c[i] <= self.gamma[1] * (all_job_start[j] - all_job_start[i] - duration[i]) 
+                            for i in range(sum(num_job)) for j in range(sum(num_job)) if i == j-1 and j not in np.cumsum(num_job))
+
+            # The precedence constraint
+            model.addConstrs(c[j] - duration[j] - c[i] >= (all_job_start[j] - all_job_start[i] - duration[i])
+                            for i in range(sum(num_job)) for j in range(sum(num_job)) if i == j-1 and j not in np.cumsum(num_job))
+
+
+            # Non-overlapping jobs in a single machine
+            model.addConstrs(c[i] <= self.t_max * (3 - z[i, b] - z[j, b] - f[i, j]) + c[j] - duration[j]
+                            for i in range(sum(num_job)) for j in range(sum(num_job)) for b in range(self.budget)
+                            if not self.__in_the_same_route(i, j, num_job))
+
+            model.addConstrs(c[j] <= self.t_max * (2 - z[i, b] - z[j, b] + f[i, j]) + c[i] - duration[i]
+                            for i in range(sum(num_job)) for j in range(sum(num_job)) for b in range(self.budget)
+                            if not self.__in_the_same_route(i, j, num_job))
+
+            # f_ij = 1 iff the start time of job i is ahead of the start time of job j
+            model.addConstrs(c[i] <= c[j] + self.t_max * (1 - f[i, j])
+                            for i in range(sum(num_job)) for j in range(sum(num_job)) if not self.__in_the_same_route(i, j, num_job))
+            model.addConstrs(c[j] <= c[i] + self.t_max * f[i, j]
+                            for i in range(sum(num_job)) for j in range(sum(num_job)) if not self.__in_the_same_route(i, j, num_job))
+
+            # c <= c_max for all c
+            model.addConstrs(c[i] <= c_max for i in range(sum(num_job)))
+        
+        
+            # Set the objective
+            model.setObjective(c_max, GRB.MINIMIZE)
+        
+        elif obj == "minimum violation":
+            
+            # Define variable
+            z = model.addMVar((sum(num_job), self.budget), vtype=GRB.BINARY)
+            c = model.addMVar(sum(num_job), vtype=GRB.CONTINUOUS, lb = all_job_start + duration, ub = np.repeat(self.t_max, sum(num_job)))
+            y = model.addMVar((sum(num_job), sum(num_job), self.budget), vtype=GRB.BINARY)
+            alpha = model.addMVar((sum(num_job), sum(num_job)), vtype=GRB.BINARY)
+            beta = model.addMVar((sum(num_job), sum(num_job)), vtype=GRB.BINARY)
+            
+            
+            # Add constraints
+            
+            
+            # Unique assignment of job
+            model.addConstrs(sum(z[i, :]) == 1 for i in range(sum(num_job)))
+            
+            # Time stamps consistency
+            #TODO:
+            
+            # Count the number of budget violation
+            model.addConstrs((z[i, b] + z[j, b] + alpha[i, j] + beta[i, j]) / 3 <= y[i, j, b] + 1 
+                            for i in range(sum(num_job)) 
+                            for j in range(sum(num_job))
+                            for b in range(self.budget)
+                            if not self.__in_the_same_route(i, j, num_job))
+            
+            model.addConstrs(4 * y[i, j, b] <= z[i, b] + z[j, b] + alpha[i, j] + beta[i, j]
+                            for i in range(sum(num_job)) 
+                            for j in range(sum(num_job)) 
+                            for b in range(self.budget)
+                            if not self.__in_the_same_route(i, j, num_job))
+
+            # Set the objective
+            model.setObjective(sum(y[i, j, b] for i in range(len(num_job)) for j in range(len(num_job)) for b in range(self.budget)), GRB.MINIMIZE)
+
+
+        else:
+            raise ValueError("The input is invalid.")
+            
+        # if obj == "average_completion":
+        #     weight = np.repeat(1/len(num_job), len(num_job))
+        #     model.setObjective(c[np.cumsum(num_job)-1] @ weight, GRB.MINIMIZE)
+
+        # Solve the scheduling feasibility recovering problem
+        model.optimize()    
+        
+        # Return 0 if the re-scheduling FRP is not feasible
+        
+        
+        if model.Status == 3:
+            print(colored("The re-scheduling MILP is infeasible.", 'yellow'))
+            return 0
+        
+        if model.Status == 16 and model.SolCount == 0:
+            print(colored("No feasible solution found within the work limit.", 'yellow'))
+            return -1
+        
+        
+        print(colored("Optimal solution found for the re-scheduling MILP!", 'green'))
+        
+        
+        # Write down the new schedule
+        new_start = c.X - duration
+        
+        cum_sum_job = np.cumsum(num_job)    
+        new_schedule_end = [list(c[: cum_sum_job[0]].X)] + [list(c[cum_sum_job[i]: cum_sum_job[i+1]].X) for i in range(len(cum_sum_job)-1)]
+        new_schedule_start = [list(new_start[: cum_sum_job[0]])] + [list(new_start[cum_sum_job[i]: cum_sum_job[i+1]]) for i in range(len(cum_sum_job)-1)]
+        
+        dict_new_schedule_end = dict(zip(range(len(new_schedule_end)), new_schedule_end))
+        dict_new_schedule_start = dict(zip(range(len(new_schedule_start)), new_schedule_start))
+        
+        with open(dir + '/new_schedule_end.json', 'w') as outfile:
+            json.dump(dict_new_schedule_end, outfile)
+        with open(dir + '/new_schedule_start.json', 'w') as outfile:
+            json.dump(dict_new_schedule_start, outfile)
+            
+        return 1
+        
+
+
 
 """
 Re-scheduling FRP
@@ -399,10 +594,11 @@ def frp_reschedule(G, routes, all_time_stamps, t_max, budget, dir, gamma, obj="m
     # strategies
     # model.Params.MIPFocus = 1 # Focusing on phase 1 (getting the first feasible solution)
     model.Params.MIPFocus = 3 # Focusing on phase 2 (moving the best upper bound)
-    model.Params.ImproveStartTime = 1 # Give up proving optimality after 2 min
+    model.Params.ImproveStartTime = 120 # Give up proving optimality
     
     # Termination    
-    model.Params.TimeLimit = 240 # Terminate the MILP solver after 5 min
+    model.Params.WorkLimit = 30 # Terminate the MILP solver after
+    model.Params.SolutionLimit = 1 # Terminate the MILP when the first feasible solution found
     
     
 
@@ -468,8 +664,8 @@ def frp_reschedule(G, routes, all_time_stamps, t_max, budget, dir, gamma, obj="m
         print(colored("The re-scheduling MILP is infeasible.", 'yellow'))
         return 0
     
-    if model.Status == 9:
-        print(colored("No feasible solution found within the time limit.", 'yellow'))
+    if model.Status == 16 and model.SolCount == 0:
+        print(colored("No feasible solution found within the work limit.", 'yellow'))
         return -1
     
     
@@ -736,7 +932,7 @@ class ReRoutingFRPSolver():
         model.Params.BestObjStop = 1.05 * self.original_route_cost(v_2_re_route)  # The original route cost is a natural lower bound. 
                                                                              # A re-route is good if the cost is < 1.05 original route cost
         
-        model.Params.TimeLimit = 240 # Terminate the MILP solver after 5 min
+        model.Params.WorkLimit = 30 # Terminate the MILP solver
         
         #TODO: Replacing AV cost with HDV cost naively is incorrect. We need to re-solve the TSP
         model.Params.Cutoff = self.HDV_route_cost(v_2_re_route) # cutoff the solution with even worse cost than dispatching an HDV
@@ -841,8 +1037,8 @@ class ReRoutingFRPSolver():
             print(colored("Re-routing is more expensive than disptaching HDVs. Unserved customers will be served by HDVs.", 'yellow'))
             return False, 0, _, _
         
-        if model.Status == 9 and model.SolCount == 0:
-            print(colored("Re-routing fails within the computational time limit. Unserved customers will be served by HDVs.", 'yellow'))
+        if model.Status == 16 and model.SolCount == 0:
+            print(colored("Re-routing fails within the computational work limit. Unserved customers will be served by HDVs.", 'yellow'))
             return False, 0, _, _
         
         
@@ -954,9 +1150,7 @@ class ReRoutingFRPSolver():
         # Determine the priority of re-routing
         order = self.sort_routes(priority = 'random')
         print("The re-routing order is: " + str(order))
-        
-        print(self.routes.keys())
-        
+                
         for v_2_re_route in order:
             
             

@@ -7,6 +7,7 @@ import argparse
 import csv
 from termcolor import colored
 import sys
+import os
 
 
 """
@@ -17,7 +18,8 @@ Arguments
 parser = argparse.ArgumentParser(description ='The algorithmic pipeline')
  
 parser.add_argument('instance', help = "The CVRP instance used") 
-parser.add_argument('path', help = "The output path")
+parser.add_argument('-p', dest = 'path', help = "The output path",
+                    default = None, required = False)
 parser.add_argument('-g', dest = "grid_size", help = "The # of neighbhoods divided by the grid in the underlying network",
                     default = 5, required = False, type = int, choices = range(1, 11))
 parser.add_argument('-bf', dest = "budget_factor", help = "The budget factor", 
@@ -50,9 +52,15 @@ Params
 instance_path = 'Instances/' + args.instance + '.vrp'
 
 # Create a dir
-dir = args.path
-instance = args.instance
 
+instance = args.instance
+dir = args.path
+if args.path == None:
+    os.mkdir(instance)
+    dir = instance
+else:
+    dir = args.path
+    
 # Set seeds
 seed = 1
 random.seed(seed)
@@ -137,11 +145,19 @@ sys.stdout.flush()
 hgs_UB = algo.UHGS_CVRPSolver(instance_path, dir, G, I, t = 5)
 hgs_UB.add_explicit_dist_mtx(cost_non_av)
 hgs_UB.solve('UB.sol')
-UB, _, _, _ = hgs_UB.extract_results(path_non_av)
+UB, _, all_time_stamps_UB, _ = hgs_UB.extract_results(path_non_av)
 
 
 # Extract the latest return time of the fleet
-t_max = max([timestamp[-1] for schedule in all_time_stamps.values() for timestamp in schedule])
+t_max = max([timestamp[-1] for schedule in all_time_stamps_UB.values() for timestamp in schedule])
+
+#* DEBUG:
+# t_max_tmp = max([timestamp[-1] for schedule in all_time_stamps.values() for timestamp in schedule])
+# print("equal: ", all_time_stamps == all_time_stamps_UB)
+# print("UB", all_time_stamps_UB)
+# print("LB", all_time_stamps)
+# print("UB T_max: " + str(t_max))
+# print("LB T_max: " + str(t_max_tmp))
 
 
 
@@ -198,7 +214,8 @@ Output the results
 print(colored("The LB, cost, and UB are: ", 'cyan'))
 print(colored(LB, 'cyan'), colored(cost, 'cyan'), colored(UB, 'cyan'))
 
-with open (dir + '/result.csv', 'a', newline = '') as file:
+result_path = dir.split('/')[0] + '/result-'+ str(args.t_max_factor) + '-' + str(args.budget_factor) +'.csv'
+with open (result_path, 'a', newline = '') as file:
     writer = csv.writer(file)
     writer.writerow([instance, LB, status, cost, UB])
 
