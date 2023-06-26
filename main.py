@@ -8,6 +8,7 @@ import csv
 from termcolor import colored
 import sys
 import os
+import shutil
 
 
 """
@@ -21,20 +22,22 @@ parser.add_argument('instance', help = "The CVRP instance used")
 parser.add_argument('-p', dest = 'path', help = "The output path",
                     default = None, required = False)
 parser.add_argument('-g', dest = "grid_size", help = "The # of neighbhoods divided by the grid in the underlying network",
-                    default = 5, required = False, type = int, choices = range(1, 11))
-parser.add_argument('-bf', dest = "budget_factor", help = "The budget factor", 
+                    default = None, required = False, type = int)
+parser.add_argument('-gf', dest = 'grid_size_factor', help = 'The grid size factor',
                     default = 2, required = False, type = int, choices = range(1, 4))
+parser.add_argument('-bf', dest = "budget_factor", help = "The budget factor", 
+                    default = 1, required = False, type = int, choices = range(1, 4))
 parser.add_argument('-b', dest = "budget", help = "The budget for the additional resources (i.e. remote control). Overwrite the function of budget factor.", 
-                    default = None, required = False)
+                    default = None, required = False, type = int)
 parser.add_argument('-t', dest = 't_max_factor', help = "The maximum delay factor for the makespan",
-                    default = 1.5, required = False, type = float)
+                    default = 1.2, required = False, type = float)
 parser.add_argument('-g1', dest = 'gamma_1', help = "The minimum factor of travel time decrease",
                     default = 1.0, required = False, type = float) 
 parser.add_argument('-g2', dest = 'gamma_2', help = "The maximum factor of travel time increase",
                     default = 1.0, required = False, type = float)
-parser.add_argument('-d', dest = 'discount_factor_av', help = "The discount factor for AVs in AV-enabled roads",
+parser.add_argument('-e1', dest = 'eta_1', help = "The discount factor for AVs in AV-enabled roads",
                     default = 0.5, required = False, type = float)
-parser.add_argument('-i', dest = 'inflated_factor_av', help = "The inflated factor for AVs in ridinary roads",
+parser.add_argument('-e2', dest = 'eta_2', help = "The inflated factor for AVs in ridinary roads",
                     default = 1.2, required = False, type = float)
 parser.add_argument('-nl', dest = 'num_layer', help = "The number of layers in the expanded graph",
                     default = 2, required = False, type = int)
@@ -51,15 +54,19 @@ Params
 # Link to the instance file
 instance_path = 'Instances/' + args.instance + '.vrp'
 
-# Create a dir
-
+# Specify an output folder 
 instance = args.instance
-dir = args.path
 if args.path == None:
-    os.mkdir(instance)
     dir = instance
+    os.mkdir(dir)
+    
 else:
     dir = args.path
+    
+# Create the folder or empty it if it already exists
+# if os.path.exists(dir):
+#     shutil.rmtree(dir)
+
     
 # Set seeds
 seed = 1
@@ -67,7 +74,12 @@ random.seed(seed)
 np.random.seed(seed)
 
 # The grid size
-grid_size = args.grid_size
+grid_size_factor = [2, 4, 6] 
+num_cus_in_a_cell = grid_size_factor[args.grid_size_factor - 1]
+grid_size = max(2, round(np.sqrt(int(instance.split('-')[1][1:]) / num_cus_in_a_cell)))
+
+if args.grid_size != None:
+    grid_size = args.grid_size
 
 # The number of vehicles
 # TODO: The naming system might be different in other instances
@@ -87,12 +99,10 @@ t_max_factor = args.t_max_factor
 gamma = [args.gamma_1, args.gamma_2]
 
 # The cost adjustment factors for AVs 
-discount_factor_av = args.discount_factor_av
-inflated_factor_av = args.inflated_factor_av
+eta = [args.eta_1, args.eta_2]
 
 # The number of layers in the expanded graph
 num_layer = args.num_layer
-
 
 
 
@@ -119,7 +129,7 @@ customer = [(I.coordinates[idx][0], I.coordinates[idx][1], 'c'+str(idx)) for idx
 depot = [(I.coordinates[0][0], I.coordinates[0][1], 'd')]
 
 # Assign edge cost for ordinary roads and AV-enabled roads
-utils.assign_cost_n_travel_time(G, discount_factor_av, inflated_factor_av)
+utils.assign_cost_n_travel_time(G, eta[0], eta[1])
 
 # Compute the distance matrices 
 print("Computing the distance matrix and the path matrix...")
@@ -179,8 +189,9 @@ Solve the re-routing FRP
 """
 
 print("Start to solve the re-routing FRP.")
-re_routing_solver = algo.ReRoutingFRPSolver(G, I, routes, all_time_stamps, clusters, t_max * t_max_factor, budget, gamma, num_layer, dir)
+re_routing_solver = algo.ReRoutingFRPSolver(G, I, routes, all_time_stamps, clusters, t_max * t_max_factor, budget, gamma, num_layer, eta, dir)
 cost, new_routes, new_all_time_stamps, D_bar, G_adjusted = re_routing_solver.solve()
+print("cost: ", cost)
 
 # Visualize 
 utils.visualize_re_routing(dir, G_adjusted, new_all_time_stamps)
@@ -214,7 +225,9 @@ Output the results
 print(colored("The LB, cost, and UB are: ", 'cyan'))
 print(colored(LB, 'cyan'), colored(cost, 'cyan'), colored(UB, 'cyan'))
 
-result_path = dir.split('/')[0] + '/result-'+ str(args.t_max_factor) + '-' + str(args.budget_factor) +'.csv'
+# result_path = dir.split('/')[0] + '/result-'+ str(args.t_max_factor) + '-' + str(args.budget_factor) +'.csv'
+result_path = dir.split('/')[0] + '/result-'+ str(args.eta_1) + '-' + str(args.eta_2) +'.csv'
+
 with open (result_path, 'a', newline = '') as file:
     writer = csv.writer(file)
     writer.writerow([instance, LB, status, cost, UB])

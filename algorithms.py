@@ -819,7 +819,7 @@ Re-routing FRP
 class ReRoutingFRPSolver():
     
     
-    def __init__(self, G, I, routes, all_time_stamps, clusters, t_max, budget, gamma, num_layer, dir) -> None:
+    def __init__(self, G, I, routes, all_time_stamps, clusters, t_max, budget, gamma, num_layer, eta, dir) -> None:
         
         # Members from input
         self.G = G
@@ -837,6 +837,7 @@ class ReRoutingFRPSolver():
         self.gamma = gamma
         self.num_layer = num_layer
         self.dir = dir
+        self.eta = eta
         
         
         # Members for output (dynamically updated)
@@ -903,8 +904,7 @@ class ReRoutingFRPSolver():
         G_e, departure, arrival, D_e, D_e_2d, demand_dict = utils.contruct_time_expanded_graph(G_s, self.num_layer, K, D, demand_subset)
     
             
-        #TODO: The discount_factor and inflated_factor for AV_enabled roads are needed here to conduct sensitivity analysis
-        utils.assign_cost_n_travel_time(G_e)
+        utils.assign_cost_n_travel_time(G_e, self.eta[0], self.eta[1])
         
         E_e = list(G_e.edges)    
         V_e = list(G_e.nodes)
@@ -1072,9 +1072,9 @@ class ReRoutingFRPSolver():
         return cost
 
             
-    def sort_routes(self, priority = 'min_av_time'):
+    def sort_routes(self, priority = 'heuristic'):
         
-        if priority == 'min_av_time':
+        if priority == 'heuristic':
             discounted_factor = 0.5
             inflated_factor = 1.2
             
@@ -1093,7 +1093,9 @@ class ReRoutingFRPSolver():
                 AV_time = total_time - control_time
                 increased_cost_list.append( (1 - discounted_factor) * AV_time/ discounted_factor + (1 - inflated_factor) * control_time / inflated_factor)
             
+
             order = np.argsort(increased_cost_list)
+            order = np.flip(order)
         
             
         elif priority == 'random':
@@ -1148,7 +1150,7 @@ class ReRoutingFRPSolver():
         D_bar = []
         
         # Determine the priority of re-routing
-        order = self.sort_routes(priority = 'random')
+        order = self.sort_routes(priority = 'heuristic')
         print("The re-routing order is: " + str(order))
                 
         for v_2_re_route in order:
